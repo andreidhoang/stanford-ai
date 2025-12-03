@@ -1,0 +1,357 @@
+# GLM-4.6 Production Inference Configuration
+# Optimized for deployment with vLLM or SGLang
+# Supports multiple quantization formats
+
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
+
+model:
+  # Model identification
+  model_name_or_path: "zai-org/GLM-4.6"  # HuggingFace model path
+  model_type: "glm"
+  trust_remote_code: true  # Required for custom model code
+
+  # Model specifications
+  vocab_size: 151552
+  hidden_size: 5120
+  num_hidden_layers: 92
+  num_attention_heads: 96
+  num_key_value_heads: 8
+  max_position_embeddings: 202752
+
+  # Generation settings
+  max_model_len: 32768  # Inference context window (vs 200K training)
+  max_output_len: 8192  # Maximum generation length
+
+# ============================================================================
+# INFERENCE ENGINE CONFIGURATION
+# ============================================================================
+
+inference_engine:
+  # Engine selection: "vllm" or "sglang"
+  engine: "vllm"
+
+  # vLLM-specific settings
+  vllm:
+    # GPU configuration
+    tensor_parallel_size: 8  # Number of GPUs for tensor parallelism
+    pipeline_parallel_size: 4  # Number of pipeline stages
+    gpu_memory_utilization: 0.90  # Use 90% of GPU memory
+
+    # KV cache configuration
+    kv_cache_dtype: "auto"  # auto, fp8, fp16, bf16
+    enable_prefix_caching: true  # Cache common prefixes
+    max_num_seqs: 256  # Maximum concurrent sequences
+    max_num_batched_tokens: 32768  # Maximum tokens in a batch
+
+    # Attention backend
+    attention_backend: "FLASHINFER"  # FLASH_ATTN, FLASHINFER, XFORMERS
+
+    # Quantization
+    quantization: null  # null, awq, gptq, squeezellm, fp8
+    load_format: "auto"  # auto, pt, safetensors
+
+    # Scheduling
+    scheduling_policy: "fcfs"  # fcfs (first-come-first-serve) or priority
+    enable_chunked_prefill: true  # Break long prefills into chunks
+
+  # SGLang-specific settings
+  sglang:
+    tensor_parallel_size: 8
+    max_running_requests: 256
+    max_total_tokens: 32768
+    context_length: 32768
+
+    # RadixAttention (SGLang's prefix caching)
+    enable_radix_cache: true
+    radix_cache_size: "10GB"
+
+    # Optimizations
+    enable_torch_compile: true
+    cuda_graph_max_seq_len: 8192
+
+# ============================================================================
+# QUANTIZATION CONFIGURATIONS
+# ============================================================================
+
+quantization:
+  # FP8 quantization (highest quality, best for H100)
+  fp8:
+    enabled: false
+    activation_scheme: "dynamic"  # static or dynamic
+    kv_cache_dtype: "fp8_e5m2"  # FP8 for KV cache
+
+  # AWQ (Activation-aware Weight Quantization)
+  awq:
+    enabled: false
+    bits: 4  # 4-bit quantization
+    group_size: 128
+    version: "gemm"  # gemm, gemv
+
+  # GPTQ (Generative Pre-trained Transformer Quantization)
+  gptq:
+    enabled: false
+    bits: 4
+    group_size: 128
+    desc_act: true  # Activation order optimization
+
+  # GGUF (for llama.cpp deployment)
+  gguf:
+    enabled: false
+    quantization_type: "Q4_K_M"  # Q4_0, Q4_K_M, Q5_K_M, Q8_0
+
+# ============================================================================
+# SERVING CONFIGURATION
+# ============================================================================
+
+serving:
+  # API server settings
+  host: "0.0.0.0"
+  port: 8000
+  api_key: null  # Set via environment variable
+
+  # Protocol support
+  enable_openai_api: true  # OpenAI-compatible API
+  enable_completions: true
+  enable_chat_completions: true
+
+  # Request handling
+  request_timeout: 300  # seconds
+  stream_timeout: 60  # seconds for streaming
+  max_concurrent_requests: 256
+
+  # CORS settings
+  allowed_origins: ["*"]
+  allowed_methods: ["*"]
+  allowed_headers: ["*"]
+
+# ============================================================================
+# GENERATION DEFAULTS
+# ============================================================================
+
+generation:
+  # Sampling parameters
+  temperature: 0.8
+  top_p: 0.95
+  top_k: 50
+  min_p: 0.05
+
+  # Repetition penalties
+  repetition_penalty: 1.0
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+
+  # Length control
+  max_tokens: 2048  # Default maximum generation length
+  min_tokens: 1
+  stop_sequences: []  # Model-specific stop tokens
+
+  # Special tokens
+  skip_special_tokens: true
+  spaces_between_special_tokens: true
+
+  # Beam search (if enabled)
+  num_beams: 1  # 1 = greedy/sampling, >1 = beam search
+  length_penalty: 1.0
+  early_stopping: false
+
+# ============================================================================
+# DEPLOYMENT SCENARIOS
+# ============================================================================
+
+deployment_scenarios:
+  # Scenario 1: High-throughput production (8× H100)
+  high_throughput:
+    gpu_count: 8
+    tensor_parallel_size: 8
+    pipeline_parallel_size: 1
+    max_num_seqs: 512
+    max_num_batched_tokens: 65536
+    gpu_memory_utilization: 0.95
+    expected_throughput: "~500 tokens/s/user, 256 concurrent users"
+
+  # Scenario 2: Low-latency single-user (1× H100)
+  low_latency:
+    gpu_count: 1
+    tensor_parallel_size: 1
+    pipeline_parallel_size: 1
+    max_num_seqs: 1
+    max_num_batched_tokens: 8192
+    gpu_memory_utilization: 0.90
+    expected_latency: "~50ms TTFT, ~20ms/token"
+
+  # Scenario 3: Balanced production (4× H100)
+  balanced:
+    gpu_count: 4
+    tensor_parallel_size: 4
+    pipeline_parallel_size: 1
+    max_num_seqs: 128
+    max_num_batched_tokens: 32768
+    gpu_memory_utilization: 0.92
+    expected_throughput: "~300 tokens/s/user, 128 concurrent users"
+
+  # Scenario 4: Memory-constrained (quantized)
+  memory_constrained:
+    gpu_count: 2
+    tensor_parallel_size: 2
+    quantization: "awq"
+    quantization_bits: 4
+    max_num_seqs: 64
+    max_num_batched_tokens: 16384
+    gpu_memory_utilization: 0.95
+    expected_throughput: "~150 tokens/s/user, 64 concurrent users"
+
+# ============================================================================
+# MONITORING AND OBSERVABILITY
+# ============================================================================
+
+monitoring:
+  # Prometheus metrics
+  enable_metrics: true
+  metrics_port: 9090
+
+  # Metrics to collect
+  metrics:
+    - "requests_total"
+    - "requests_duration_seconds"
+    - "tokens_generated_total"
+    - "time_to_first_token_seconds"
+    - "time_per_output_token_seconds"
+    - "kv_cache_usage_percent"
+    - "gpu_memory_usage_percent"
+    - "active_requests"
+    - "queue_depth"
+
+  # Logging
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_requests: true
+  log_stats_interval: 10  # seconds
+
+  # Health checks
+  health_check_endpoint: "/health"
+  health_check_interval: 30  # seconds
+
+# ============================================================================
+# PERFORMANCE OPTIMIZATION
+# ============================================================================
+
+performance:
+  # Compute optimization
+  torch_compile: false  # PyTorch 2.0 compilation (experimental)
+  cuda_graphs: true  # Enable CUDA graphs for fixed batch sizes
+
+  # Memory optimization
+  swap_space: "16GB"  # CPU swap space for overflow
+  enable_lora: false  # LoRA adapter support
+  max_lora_rank: 64
+
+  # Batching strategy
+  dynamic_batching: true
+  max_batch_size: 256
+  batch_timeout_ms: 100  # Wait up to 100ms to fill batch
+
+# ============================================================================
+# SAFETY AND CONTENT FILTERING
+# ============================================================================
+
+safety:
+  # Content filtering
+  enable_content_filter: false  # External filter recommended
+  max_prompt_length: 32768
+  max_output_length: 8192
+
+  # Rate limiting
+  enable_rate_limiting: true
+  requests_per_minute: 100
+  tokens_per_minute: 100000
+
+  # Safety checks
+  check_prompt_safety: false
+  check_output_safety: false
+
+# ============================================================================
+# COST ESTIMATION
+# ============================================================================
+
+cost_estimation:
+  # GPU costs (hourly, USD)
+  h100_cost_per_hour: 3.00
+  a100_cost_per_hour: 2.00
+
+  # Scenario costs (monthly, 24/7 operation)
+  high_throughput_monthly: 17280  # 8 × $3.00 × 720 hours
+  low_latency_monthly: 2160       # 1 × $3.00 × 720 hours
+  balanced_monthly: 8640          # 4 × $3.00 × 720 hours
+  memory_constrained_monthly: 4320  # 2 × $3.00 × 720 hours
+
+  # Typical traffic costs
+  typical_requests_per_day: 100000
+  typical_tokens_per_request: 500
+  typical_monthly_tokens: 1500000000  # 1.5B tokens
+
+# ============================================================================
+# ENVIRONMENT VARIABLES
+# ============================================================================
+
+environment:
+  required:
+    - "CUDA_VISIBLE_DEVICES"
+    - "MODEL_PATH"
+
+  optional:
+    - "VLLM_API_KEY"
+    - "VLLM_WORKER_MULTIPROC_METHOD"
+    - "VLLM_LOGGING_LEVEL"
+    - "PYTORCH_CUDA_ALLOC_CONF"
+
+  recommended_settings:
+    PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:512"
+    NCCL_P2P_DISABLE: "0"  # Enable P2P for multi-GPU
+    NCCL_IB_DISABLE: "0"   # Enable InfiniBand
+
+# ============================================================================
+# EXAMPLE DEPLOYMENT COMMANDS
+# ============================================================================
+
+example_commands:
+  vllm_basic: |
+    python -m vllm.entrypoints.openai.api_server \
+      --model zai-org/GLM-4.6 \
+      --tensor-parallel-size 8 \
+      --trust-remote-code
+
+  vllm_optimized: |
+    python -m vllm.entrypoints.openai.api_server \
+      --model zai-org/GLM-4.6 \
+      --tensor-parallel-size 8 \
+      --pipeline-parallel-size 4 \
+      --max-model-len 32768 \
+      --max-num-seqs 256 \
+      --gpu-memory-utilization 0.95 \
+      --enable-prefix-caching \
+      --trust-remote-code
+
+  sglang_basic: |
+    python -m sglang.launch_server \
+      --model zai-org/GLM-4.6 \
+      --tp 8 \
+      --context-length 32768
+
+  quantized_deployment: |
+    python -m vllm.entrypoints.openai.api_server \
+      --model zai-org/GLM-4.6 \
+      --quantization awq \
+      --tensor-parallel-size 4 \
+      --trust-remote-code
+
+  docker_deployment: |
+    docker run --gpus all \
+      -v ~/.cache/huggingface:/root/.cache/huggingface \
+      --env "HUGGING_FACE_HUB_TOKEN=<secret>" \
+      -p 8000:8000 \
+      --ipc=host \
+      vllm/vllm-openai:latest \
+      --model zai-org/GLM-4.6 \
+      --tensor-parallel-size 8 \
+      --trust-remote-code

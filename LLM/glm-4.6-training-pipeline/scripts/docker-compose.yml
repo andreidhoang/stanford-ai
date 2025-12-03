@@ -1,0 +1,109 @@
+# Docker Compose for GLM-4.6 Deployment
+# Supports both vLLM and SGLang deployment options
+
+version: '3.8'
+
+services:
+  # vLLM deployment
+  glm46-vllm:
+    build:
+      context: .
+      dockerfile: Dockerfile.vllm
+    image: glm46-vllm:latest
+    container_name: glm46-vllm
+    runtime: nvidia
+    environment:
+      - MODEL_NAME=${MODEL_NAME:-zai-org/GLM-4.6}
+      - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-4}
+      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.95}
+      - MAX_NUM_SEQS=${MAX_NUM_SEQS:-256}
+      - PORT=8000
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    ports:
+      - "8000:8000"  # API port
+      - "9090:9090"  # Metrics port
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-4}
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    restart: unless-stopped
+    networks:
+      - glm46-network
+
+  # Monitoring with Prometheus (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: glm46-prometheus
+    profiles:
+      - monitoring
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9091:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - glm46-network
+    restart: unless-stopped
+
+  # Grafana dashboard (optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: glm46-grafana
+    profiles:
+      - monitoring
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - glm46-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Nginx reverse proxy (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: glm46-nginx
+    profiles:
+      - production
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    networks:
+      - glm46-network
+    depends_on:
+      - glm46-vllm
+    restart: unless-stopped
+
+volumes:
+  huggingface-cache:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  glm46-network:
+    driver: bridge
